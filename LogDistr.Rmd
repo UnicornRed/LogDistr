@@ -5,6 +5,15 @@ output: html_notebook
 
 # Анализ параметров в сложных распределениях
 
+```{r warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(foreach)
+library(doSNOW)
+library(plotly)
+library(latex2exp)
+```
+
 ## Рассеяние
 
 ```{r}
@@ -38,15 +47,19 @@ log_prepering <- function(p = 0.5){
 Моделирование логарифмического распределения по табличной функции распределения:
 
 ```{r}
+# rlog <- function(sum){
+#   x <- runif(1)
+#   j <- 1
+#   
+#   while (x > sum[j]){
+#     j <- j + 1
+#   }
+#   
+#   j
+# }
+
 rlog <- function(sum){
-  x <- runif(1)
-  j <- 1
-  
-  while (x > sum[j]){
-    j <- j + 1
-  }
-  
-  j
+  which.min(sum < runif(1))
 }
 ```
 
@@ -127,7 +140,7 @@ rnlog_0 <- function(n = 1, p = 0.5, sum){
 ```{r}
 table_log <- log_0_prepering(0.75)
 v <- rnlog_0(10000, 0.75, table_log)
-hist(v[v < 9], probability = TRUE, breaks = seq(-0.5, max(v) + 0.5, 1), xlim = c(-0.5, 8.5), xlab = "Sample", main = "")
+hist(v[v < 9], probability = TRUE, breaks = seq(-0.5, max(v) + 0.5, 1), xlim = c(-0.5, 8.5), xlab = "Выборка", ylab = "Вероятность", main = "")
 ```
 
 ## Биномиально-логарифмическое распределение
@@ -186,7 +199,30 @@ get_prob_binomlog <- function(k, p = 0.5, n = 1, q = 0.5){
     frac <- frac * (n - j)
   }
   
-  prob <- -(1 - p) ^(n - k) * q ^k * res
+  prob <- (1 - p) ^(n - k) * q ^k * res
+  
+  if (is.nan(prob) || is.infinite(prob) || prob < 1e-309){
+    return(1e-309)
+  }
+  
+  (1 - p) ^(n - k) * q ^k * res
+}
+
+get_prob_binomlog <- function(k, p = 0.5, n = 1, q = 0.5){
+  res <- 0
+  alpha <- -1 / log(1 - q)
+  frac <- 1
+
+  for (j in 0:k){
+    res <- res + frac * NumStir[k + 1, j + 1] * (p * alpha) ^j * (1 - p) ^(k - j)
+    frac <- frac * (n - j)
+  }
+  
+  prob <- (1 - p) ^(n - k) * q ^k * res
+  
+  if (is.nan(prob) || is.infinite(prob) || prob < 1e-309){
+    return(1e-309)
+  }
   
   (1 - p) ^(n - k) * q ^k * res
 }
@@ -195,22 +231,25 @@ get_prob_binomlog <- function(k, p = 0.5, n = 1, q = 0.5){
 Функция правдоподобия для бином-логарифма:
 
 ```{r}
-m_log_lik_binomlog <- function(x.in, p = 0.5, n = 1, q = 0.5){
+m_log_lik_binomlog_old <- function(x.in, p = 0.5, n = 1, q = 0.5){
   if (q <= 0 || q >= 1 || p <= 0 || p >= 1 || n <= 0){
     return(-log(0));
   }
   res <- 0
 
   for (i in x.in){
-    prob <- get_prob_binomlog(i, p, n, q)
-    
-    if (prob < 0 || prob > 1 || is.nan(prob))
-      return(-log(0))
-    
-    res <- res + log(prob)
+    res <- res + log(get_prob_binomlog(i, p, n, q))
   }
 
   -res
+}
+
+m_log_lik_binomlog <- function(x.in, p = 0.5, n = 1, q = 0.5){
+  if (q <= 0 || q >= 1 || p <= 0 || p >= 1 || n <= 0){
+    return(-log(0));
+  }
+  
+  -sum(sapply(x.in, function(i) log(get_prob_binomlog(i, p, n, q))))
 }
 ```
 
@@ -319,6 +358,8 @@ rlogpois <- function(num = 1, sumlog, lambda = 1){
 }
 ```
 
+Числа для ЛПР:
+
 ```{r}
 MakeNumPois <- function(data, n){
   for (i in 2:n){
@@ -336,7 +377,7 @@ MakeNumPois <- function(data, n){
   data
 }
 
-nNumPois <- 100
+nNumPois <- 600
 NumPois <- as.data.frame(matrix(nrow = nNumPois, ncol = nNumPois))
 for (i in 1:nNumPois){
   NumPois[i, 1] <- 1 / gamma(i + 1)
@@ -345,6 +386,8 @@ for (i in 1:nNumPois){
 NumPois[1, 1] <- 1
 NumPois <- MakeNumPois(NumPois, nNumPois)
 ```
+
+Вероятности логарифмически-пуассоновского распределения:
 
 ```{r}
 get_prob_logpois <- function(k, q = 0.5, lambda = 1){
@@ -363,6 +406,25 @@ get_prob_logpois <- function(k, q = 0.5, lambda = 1){
     
     res * lambda ** k / (1 - m) ** k * alpha
   }
+}
+```
+
+```{r}
+get_prob_logpois_fullprob <- function(k, q = 0.5, lambda = 1){
+  res <- 0
+  alpha <- -1 / log(1 - q)
+  
+  for (j in 1:1000){
+    part <- q ** j / gamma(k + 1) * j ** (k - 1) * exp(-j * lambda)
+    
+    if (part == 0){
+      break
+    }
+    
+    res <- res + part
+  }
+  
+  res * alpha * lambda ** k
 }
 ```
 
@@ -387,45 +449,45 @@ $$
 Вероятность лог-пуассона для $k = 0, 1, 2, 3, 4$:
 
 ```{r}
-get_prob_logpois_logpois_0 <- function(q = 0.5, lambda = 1){
-  log(1 - q * exp(-lambda)) / log(1 - q)
-}
-
-get_prob_logpois_logpois_1 <- function(q = 0.5, lambda = 1){
-  -q * lambda * exp(-lambda) / ((1 - q* exp(-lambda)) * log(1 - q))
-}
-
-get_prob_logpois_logpois_2 <- function(q = 0.5, lambda = 1){
-  1 / 2 * (-q * lambda ^ 2 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 2 * log(1 - q)))
-}
-
-get_prob_logpois_logpois_3 <- function(q = 0.5, lambda = 1){
-  1 / 6 * (q * exp(-lambda) + 1) * (-q * lambda ^ 3 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 3 * log(1 - q)))
-}
-
-get_prob_logpois_logpois_4 <- function(q = 0.5, lambda = 1){
-  1 / 24 * (q ** 2 * exp(-2 * lambda) + 4 * q * exp(-lambda) + 1) * (-q * lambda ^ 4 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 4 * log(1 - q)))
-}
+# get_prob_logpois_logpois_0 <- function(q = 0.5, lambda = 1){
+#   log(1 - q * exp(-lambda)) / log(1 - q)
+# }
+# 
+# get_prob_logpois_logpois_1 <- function(q = 0.5, lambda = 1){
+#   -q * lambda * exp(-lambda) / ((1 - q* exp(-lambda)) * log(1 - q))
+# }
+# 
+# get_prob_logpois_logpois_2 <- function(q = 0.5, lambda = 1){
+#   1 / 2 * (-q * lambda ^ 2 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 2 * log(1 - q)))
+# }
+# 
+# get_prob_logpois_logpois_3 <- function(q = 0.5, lambda = 1){
+#   1 / 6 * (q * exp(-lambda) + 1) * (-q * lambda ^ 3 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 3 * log(1 - q)))
+# }
+# 
+# get_prob_logpois_logpois_4 <- function(q = 0.5, lambda = 1){
+#   1 / 24 * (q ** 2 * exp(-2 * lambda) + 4 * q * exp(-lambda) + 1) * (-q * lambda ^ 4 * exp(-lambda) / ((1 - q* exp(-lambda)) ^ 4 * log(1 - q)))
+# }
 ```
 
 Вероятности логарифмически-пуассоновского распределения:
 
 ```{r}
-get_prob_logpois <- function(k, q = 0.5, lambda = 1){
-  if (k == 0){
-    get_prob_logpois_logpois_0(q, lambda)
-  } else if (k == 1){
-    get_prob_logpois_logpois_1(q, lambda)
-  } else if (k == 2){
-    get_prob_logpois_logpois_2(q, lambda)
-  } else if (k == 3){
-    get_prob_logpois_logpois_3(q, lambda)
-  } else if (k == 4){
-    get_prob_logpois_logpois_4(q, lambda)
-  } else if (k >= 5){
-    1 - sum(sapply(0:4, function(k) get_prob_logpois(k, q, lambda)))
-  }
-}
+# get_prob_logpois <- function(k, q = 0.5, lambda = 1){
+#   if (k == 0){
+#     get_prob_logpois_logpois_0(q, lambda)
+#   } else if (k == 1){
+#     get_prob_logpois_logpois_1(q, lambda)
+#   } else if (k == 2){
+#     get_prob_logpois_logpois_2(q, lambda)
+#   } else if (k == 3){
+#     get_prob_logpois_logpois_3(q, lambda)
+#   } else if (k == 4){
+#     get_prob_logpois_logpois_4(q, lambda)
+#   } else if (k >= 5){
+#     1 - sum(sapply(0:4, function(k) get_prob_logpois(k, q, lambda)))
+#   }
+# }
 ```
 
 Гистограмма распределения:
@@ -434,6 +496,8 @@ get_prob_logpois <- function(k, q = 0.5, lambda = 1){
 samLPR <- rlogpois(10000, log_prepering(0.25), lambda = 3.45)
 hist.default(samLPR, breaks = seq(-0.5, max(samLPR) + 0.5, 1), probability = TRUE)
 points(x = 0:max(samLPR), y = sapply(0:max(samLPR), function(k) get_prob_logpois(k, 0.25, 3.45)))
+probLBR1 <- sapply(0:max(samLPR), function(k) get_prob_logpois(k, 0.25, 3.45))
+probLBR2 <- sapply(0:max(samLPR), function(k) get_prob_logpois_fullprob(k, 0.25, 3.45))
 ```
 
 Функция правдоподобия для лог-бинома:
@@ -528,12 +592,34 @@ m_log_lik_doublenbinom <- function(x.in, p_1 = 0.5, size_1= 1, p_2 = 0.5, size_2
 }
 ```
 
+## Пуассоновское распределение
+
+```{r}
+m_log_lik_pois <- function(x.in, lambda = 1){
+  if (lambda < 0)
+    return(-log(0))
+  
+  res <- 0
+  
+  for (i in x.in){
+    prob <- dpois(i, lambda = lambda)
+    
+    if (prob < 0 || prob > 1 || is.nan(prob))
+      return(-log(0))
+    
+    res <- res + log(prob)
+  }
+  
+  -res
+}
+```
+
 ## Поиск оптимальных параметров и проверка согласия распределения по $\chi ^2$
 
 Создание выборки по частотам значений случайной величины:
 
 ```{r}
-generate_sample <- function(num_k){
+generate_sample_old <- function(num_k){
   sam <- c()
   
   for (i in 1:length(num_k)){
@@ -542,12 +628,16 @@ generate_sample <- function(num_k){
   
   sam
 }
+
+generate_sample <- function(num_k){
+  rep.int(0:(length(num_k) - 1), num_k)
+}
 ```
 
 Статистика критерия $\chi ^2$:
 
 ```{r}
-my_chisq <- function(exp_prob, prob){
+my_chisq_old <- function(exp_prob, prob){
   res <- 0
   
   for (i in 1:length(prob)){
@@ -555,6 +645,10 @@ my_chisq <- function(exp_prob, prob){
   }
   
   res
+}
+
+my_chisq <- function(exp_prob, prob){
+  sum((exp_prob - prob)^2 / prob)
 }
 ```
 
@@ -564,8 +658,8 @@ my_chisq <- function(exp_prob, prob){
 hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
   sam <- generate_sample(exp_prob)
   N <- length(sam)
-  var_sam = var(sam) * (N - 1) / N
-  mean_sam = mean(sam)
+  var_sam <- var(sam) * (N - 1) / N
+  mean_sam <- mean(sam)
   exp_prob <- exp_prob / N
   
   if (n == 0){
@@ -584,8 +678,9 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
         nRight <- (left + 2 * right) %/% 3
         # qLeft <- optimize(function(x) m_log_lik_binomlog(sam, p = (var_sam / mean_sam * log(1 - x) * (1 - x) - log(1 - x)) / x, n = nLeft, q = x), c(0.01, 0.99))
         # qRight <- optimize(function(x) m_log_lik_binomlog(sam, p = (var_sam / mean_sam * log(1 - x) * (1 - x) - log(1 - x)) / x, n = nRight, q = x), c(0.01, 0.99))
-        qLeft <- optim(c(0.5, 1 / nLeft), function(x) m_log_lik_binomlog(sam, p = x[2], q = x[1], n = nLeft))
-        qRight <- optim(c(0.5, 1 / nRight), function(x) m_log_lik_binomlog(sam, p = x[2], q = x[1], n = nRight))
+        # print(nLeft)
+        qLeft <- optim(c(0.5, 1 / nLeft), function(x) m_log_lik_binomlog(sam, p = x[2], n = nLeft, q = x[1]))
+        qRight <- optim(c(0.5, 1 / nRight), function(x) m_log_lik_binomlog(sam, p = x[2], n = nRight, q = x[1]))
 
         # if (qLeft$objective <= qRight$objective) {
         #   right <- nRight
@@ -600,16 +695,15 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
           left <- nLeft
         }
       }
-      
       # minValue <- optimize(function(x) m_log_lik_binomlog(sam, p = (var_sam / mean_sam * log(1 - x) * (1 - x) - log(1 - x)) / x, n = left, q = x), c(0.01, 0.99))
-      minValue <- optim(c(0.5, 1 / left), function(x) m_log_lik_binomlog(sam, p = x[2], q = x[1], n = left))
+      minValue <- optim(c(0.5, 1 / (left + 1)), function(x) m_log_lik_binomlog(sam, p = x[2], n = left, q = x[1]))
       # q <- minValue$minimum
       q <- minValue$par[1]
       p <- minValue$par[2]
       n <- left
       for (i in (left + 1):right){
         # value <- optimize(function(x) m_log_lik_binomlog(sam, p = (var_sam / mean_sam * log(1 - x) * (1 - x) - log(1 - x)) / x, n = i, q = x), c(0.01, 0.99))
-        value <- optim(c(0.5, 1 / i), function(x) m_log_lik_binomlog(sam, p = x[2], q = x[1], n = i))
+        value <- optim(c(0.5, 1 / i), function(x) m_log_lik_binomlog(sam, p = x[2], n = i, q = x[1]))
         # if (value$objective <= minValue$objective){
         #   minValue <- value
         #   q <- value$minimum
@@ -625,6 +719,7 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
     }
     else {
       q <- optimize(function(x) m_log_lik_binomlog(sam, p = (var_sam / mean_sam * log(1 - x) * (1 - x) - log(1 - x)) / x, n = n, q = x), c(0.01, 0.99))$minimum
+      p <- (var_sam / mean_sam * log(1 - q) * (1 - q) - log(1 - q)) / q
     }
 
     # res <- c(n, q, (var_sam / mean_sam * log(1 - q) * (1 - q) - log(1 - q)) / q)
@@ -634,7 +729,7 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
     if (n == 0){
       left <- 1
       right <- 1000
-      while (right - left > 1) {
+      while (right - left > 2) {
         nLeft <- (2 * left + right) %/% 3
         nRight <- (left + 2 * right) %/% 3
         # qLeft <- optimize(function(x) m_log_lik_logbinom(sam, q = x, p = - log(1 - x) * (1 - x) / nLeft / x * mean_sam, n = nLeft), c(0.01, 0.99))
@@ -649,20 +744,19 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
         #   left <- nLeft + 1
         # }
         if (qLeft$value <= qRight$value) {
-          right <- nRight - 1
+          right <- nRight
         }
         else{
-          left <- nLeft + 1
+          left <- nLeft
         }
       }
       
       # minValue <- optimize(function(x) m_log_lik_logbinom(sam, q = x, p = - log(1 - x) * (1 - x) / left / x * mean_sam, n = left), c(0.01, 0.99))
-      minValue <- optim(c(0.5, 1 / left), function(x) m_log_lik_logbinom(sam, q = x[1], p = x[2], n = left))
+      minValue <- optim(c(0.5, 1 / (left + 1)), function(x) m_log_lik_logbinom(sam, q = x[1], p = x[2], n = left))
       # q <- minValue$minimum
       q <- minValue$par[1]
       p <- minValue$par[2]
       n <- left
-      print(minValue$value)
       for (i in (left + 1):right){
         # value <- optimize(function(x) m_log_lik_logbinom(sam, q = x, p = - log(1 - x) * (1 - x) / i / x * mean_sam, n = i), c(0.01, 0.99))
         value <- optim(c(0.5, 1 / i), function(x) m_log_lik_logbinom(sam, q = x[1], p = x[2], n = i))
@@ -681,17 +775,18 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
     }
     else {
       q <- optimize(function(x) m_log_lik_logbinom(sam, q = x, p = - log(1 - x) * (1 - x) / n / x * mean_sam, n = n), c(0.01, 0.99))$minimum
+      p <- -log(1 - q) * (1 - q) / n / q * mean_sam
     }
     
     # res <- c(n, q, - log(1 - q) * (1 - q) / n / q * mean_sam)
     res <- c(n, q, p)
   } else if (distr == 'logpois'){
-    q <- optim(c(0.5, 1), function(x) m_log_lik_logpois(sam, x[1], x[2]))
+    q <- optim(c(0.5, 1), function(x) m_log_lik_logpois(sam, q = x[1], lambda = x[2]))
     lambda <- q$par[2]
     q <- q$par[1]
     res <- c(lambda, q)
   } else if (distr == 'nbinom'){
-    q <- optim(c(0.2, 5), function(x) m_log_lik_nbinom(sam, x[1], x[2]))
+    q <- optim(c(0.5, 1), function(x) m_log_lik_nbinom(sam, q = x[1], n = x[2]))
     n <- q$par[2]
     q <- q$par[1]
     res <- c(n, q)
@@ -706,6 +801,9 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
     q <- optim(c(0.1, 1),
                function(x) m_log_lik_yule_simon_nbinom(sam, q = x[1], n = x[2]))
     res <- c(q$par[1], q$par[2])
+  } else if (distr == "pois"){
+    lambda <- optimize(function(x) m_log_lik_pois(sam, lambda = x), c(0, 1000))$minimum
+    res <- c(lambda)
   }
   
   # print(res)
@@ -725,7 +823,9 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
       prob <- c(prob, get_prob_doublenbinom(i, p_1 = res[1], size_1 = res[2], p_2 = res[3], size_2 = res[4]))
     } else if (distr == "yulesimonnbinom"){
       prob <- c(prob, get_prob_yule_simon_nbinom(i, q = res[1], n = res[2]))
-    }
+    } else if (distr == "pois"){
+      prob <- c(prob, dpois(i, lambda = res[1]))
+    } 
   }
   
   prob <- c(prob, 1 - sum(prob))
@@ -734,7 +834,7 @@ hist_make <- function (n, exp_prob, get_hist, distr = 'binomlog'){
   max_el_y = max(exp_prob, prob)
   
   if (get_hist){
-    hist.default(sam, probability = TRUE, breaks = seq(-0.5, max_el_x + 0.5, 1), xlim = c(-0.5, max_el_x + 0.5), ylim = c(0, max_el_y), xlab = "Sample", main = "")
+    hist.default(sam, probability = TRUE, breaks = seq(-0.5, max_el_x + 0.5, 1), xlim = c(-0.5, max_el_x + 0.5), ylim = c(0, max_el_y), xlab = "Выборка", ylab = "Вероятность", main = "")
     points(0:(length(prob) - 1), prob)
   }
   
@@ -821,33 +921,118 @@ funcMP_3D <- function(data, distr = 'binomlog', inter_par1 = c(0.01, 0.99, 100),
 Проверка оценки для ЛБР:
 
 ```{r warning=FALSE}
-samLBR <- rlogbinom(100, log_prepering(0.4), 6, 0.3)
+samLBR <- rlogbinom(1000, log_prepering(0.4), 6, 0.3)
 samLBR <- sapply(samLBR, function(x) if (x > 4){5} else {x})
 histLBR <- hist(as.numeric(samLBR), probability = TRUE, breaks = seq(-0.5, max(samLBR) + 0.5, 1), xlim = c(-0.5, max(samLBR) + 0.5), plot = TRUE)
 res <- hist_make(0, as.numeric(histLBR$counts), get_hist = TRUE, 'logbinom')
-funcMP_3D(histLBR$counts, distr = 'logbinom')
+# funcMP_3D(histLBR$counts, distr = 'logbinom')
 res
+```
+
+```{r}
+q_LBR <- c()
+n_LBR <- c()
+p_LBR <- c()
+seq_LBR <- seq(100, 10000, 500)
+samLBR <- rlogbinom(10000, log_prepering(0.4), 6, 0.3)
+samLBR <- sapply(samLBR, function(x) if (x > 4){5} else {x})
+
+for (i in seq_LBR){
+  histLBR <- hist(as.numeric(samLBR[1:i]), breaks = seq(-0.5, max(samLBR) + 0.5, 1), plot = FALSE)
+  res <- hist_make(0, as.numeric(histLBR$counts), get_hist = FALSE, 'logbinom')
+  n_LBR <- c(n_LBR, res[1])
+  q_LBR <- c(q_LBR, res[2])
+  p_LBR <- c(p_LBR, res[3])
+}
+```
+
+```{r}
+par(mfrow = c(1, 3))
+plot(x = seq_LBR, y = q_LBR, xlab = "Размер выборки", ylab = "Оценка параметра q логарифма")
+abline(h = 0.4, lty = "dashed")
+legend(x = "topright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+plot(x = seq_LBR, y = n_LBR, xlab = "Размер выборки", ylab = "Оценка параметра n бинома")
+abline(h = 6, lty = "dashed")
+legend(x = "topright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+plot(x = seq_LBR, y = p_LBR, xlab = "Размер выборки", ylab = "Оценка параметра p бинома")
+abline(h = 0.3, lty = "dashed")
+legend(x = "bottomright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+par(mfrow = c(1, 1))
 ```
 
 Проверка оценки для БЛР:
 
 ```{r warning=FALSE}
-samBLR <- rbinomlog(100, 6, 0.3, log_prepering(0.4))
-histBLR <- hist(as.numeric(samBLR), probability = TRUE, breaks = seq(-0.5, max(samBLR) + 0.5, 1), xlim = c(-0.5, max(samBLR) + 0.5), plot = TRUE)
+samBLR <- rbinomlog(1000, 8, 0.25, log_prepering(0.2))
+histBLR <- hist(as.numeric(samBLR), probability = TRUE, breaks = seq(-0.5, max(samBLR) + 0.5, 1), xlim = c(-0.5, max(samBLR) + 0.5), plot = TRUE, xlab = "Выборка", ylab = "Вероятность", main = "")
 res <- hist_make(0, as.numeric(histBLR$counts), get_hist = TRUE, 'binomlog')
-funcMP_3D(histBLR$counts)
+funcMP_3D(histBLR$counts, inter_par2 = c(1, 100, 100))
 res
+```
+
+```{r}
+q_BLR <- c()
+n_BLR <- c()
+p_BLR <- c()
+seq_BLR <- seq(100, 10000, 500)
+samBLR <- rbinomlog(10000, 6, 0.3, log_prepering(0.4))
+
+for (i in seq_BLR){
+  histBLR <- hist(as.numeric(samBLR[1:i]), breaks = seq(-0.5, max(samBLR) + 0.5, 1), plot = FALSE)
+  res <- hist_make(0, as.numeric(histBLR$counts), get_hist = FALSE, 'binomlog')
+  n_BLR <- c(n_BLR, res[1])
+  q_BLR <- c(q_BLR, res[2])
+  p_BLR <- c(p_BLR, res[3])
+  print(i)
+}
+```
+
+```{r}
+par(mfrow = c(1, 3))
+plot(x = seq_BLR, y = q_BLR, xlab = "Размер выборки", ylab = "Оценка параметра q логарифма")
+abline(h = 0.4, lty = "dashed")
+legend(x = "bottomright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+plot(x = seq_BLR, y = n_BLR, xlab = "Размер выборки", ylab = "Оценка параметра n бинома")
+abline(h = 6, lty = "dashed")
+legend(x = "topright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+plot(x = seq_BLR, y = p_BLR, xlab = "Размер выборки", ylab = "Оценка параметра p бинома")
+abline(h = 0.3, lty = "dashed")
+legend(x = "bottomright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+par(mfrow = c(1, 1))
 ```
 
 Проверка оценки для ЛПР:
 
 ```{r warning=FALSE}
-samLPR <- rlogpois(100, log_prepering(7.617121e-01), 0.4060056)
-samLPR <- sapply(samLPR, function(x) if (x > 4){5} else {x})
-histLPR <- hist(as.numeric(samLPR), probability = TRUE, breaks = seq(-0.5, max(samLPR) + 0.5, 1), xlim = c(-0.5, max(samLPR) + 0.5), plot = TRUE)
+samLPR <- rlogpois(1000, log_prepering(0.25), 3.45)
+histLPR <- hist(as.numeric(samLPR[1:100]), probability = TRUE, breaks = seq(-0.5, max(samLPR) + 0.5, 1), xlim = c(-0.5, max(samLPR) + 0.5), plot = TRUE)
 res <- hist_make(0, as.numeric(histLPR$counts), get_hist = TRUE, 'logpois')
-funcMP_3D(histLPR$counts, distr = 'logpois', inter_par1 = c(0.01, 0.99, 100), inter_par2 = c(0.01, 2.99, 100))
+# funcMP_3D(histLPR$counts, distr = 'logpois', inter_par1 = c(0.01, 0.99, 100), inter_par2 = c(3.1, 4.1, 10))
 res
+```
+
+Состоятельность:
+
+```{r}
+q_LPR <- c()
+lambda_LPR <- c()
+samLPR <- rlogpois(10000, log_prepering(0.25), 3.45)
+
+for (i in seq(100, 10000, 100)){
+  histLPR <- hist(as.numeric(samLPR[1:i]), breaks = seq(-0.5, max(samLPR) + 0.5, 1), plot = FALSE)
+  res <- hist_make(0, as.numeric(histLPR$counts), get_hist = FALSE, 'logpois')
+  lambda_LPR <- c(lambda_LPR, res[1])
+  q_LPR <- c(q_LPR, res[2])
+}
+```
+
+```{r}
+plot(x = seq(100, 10000, 100), y = q_LPR, xlab = "Размер выборки", ylab = "Оценка параметра логарифма")
+abline(h = 0.25, lty = "dashed")
+legend(x = "bottomright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
+plot(x = seq(100, 10000, 100), y = lambda_LPR, xlab = "Размер выборки", ylab = "Оценка параметра Пуассона")
+abline(h = 3.45, lty = "dashed")
+legend(x = "bottomright", legend = "Истинное значение", lty = 2, col = 1, lwd = 2)
 ```
 
 ```{r warning=FALSE}
@@ -866,7 +1051,8 @@ m <- read.csv("./VitroVivo.csv")
 df.BLR <- data.frame(n = rep(0, 19), q = rep(0, 19), p = rep(0, 19), p_value = rep(0, 19))
 df.LBR <- data.frame(n = rep(0, 19), q = rep(0, 19), p = rep(0, 19), p_value = rep(0, 19))
 df.LPR <- data.frame(lambda = rep(0, 19), q = rep(0, 19), p_value = rep(0, 19))
-df.NB <- data.frame(n = rep(0, 19), q = rep(0, 19), p_value = rep(0, 19))
+df.NBR <- data.frame(n = rep(0, 19), q = rep(0, 19), p_value = rep(0, 19))
+df.PR <- data.frame(lambd = rep(0, 19), p_value = rep(0, 19))
 ```
 
 Рассеяние:
@@ -880,10 +1066,12 @@ e.df
 
 ```{r warning=FALSE}
 for (i in 1:19){
-  # df.BLR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'binomlog')
-  # df.LBR[i, ] <- hist_make(10000, as.numeric(m[i,]), get_hist = FALSE, 'logbinom')
+  print(i)
+  df.BLR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'binomlog')
+  # df.LBR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'logbinom')
   # df.LPR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'logpois')
-  df.NB[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'nbinom')
+  # df.NBR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'nbinom')
+  # df.PR[i, ] <- hist_make(0, as.numeric(m[i,]), get_hist = FALSE, 'pois')
 }
 ```
 
@@ -898,19 +1086,24 @@ df.LBR
 ```
 
 ```{r}
+df.LPR <- df.LPR |> mutate(mean_log = -q / log(1 - q) / (1 - q))
 df.LPR
 ```
 
 ```{r}
-df.NB <- df.NB |> mutate(lambda = -n / log(1 - q))
-df.NB
+df.NBR <- df.NBR |> mutate(lambda = -n / log(1 - q))
+df.NBR
+```
+
+```{r}
+df.PR
 ```
 
 
 Гистограммы для строки данных:
 
 ```{r warning=FALSE}
-res <- hist_make(0, as.numeric(m[14,]), get_hist = TRUE, 'binomlog')
+res <- hist_make(0, as.numeric(m[18,]), get_hist = TRUE, 'binomlog')
 res
 res <- hist_make(1000, as.numeric(m[18,]), get_hist = TRUE, 'logbinom')
 res
@@ -922,7 +1115,7 @@ res
 
 ```{r warning=FALSE}
 funcMP_3D(as.numeric(m[1,]), distr = 'binomlog', inter_par2 = c(1, 20, 20))
-funcMP_3D(as.numeric(m[1,]), distr = 'logbinom', inter_par2 = c(1, 20, 20))
+funcMP_3D(as.numeric(m[7,]), distr = 'logbinom', inter_par2 = c(1, 20, 100))
 funcMP_3D(as.numeric(m[11,]), distr = 'logpois', inter_par1 = c(0.01, 0.99, 100), inter_par2 = c(0.01, 2.99, 100))
 ```
 
@@ -954,51 +1147,49 @@ lines(seq(0, 40, 5), df.BLR$p[11:19], type = "b", col = "black")
 plot(seq(0, 45, 5), df.BLR$q[1:10], type = "l", col = "blue", ylim = c(0, max(df.BLR$q)), ylab = "Parametr q", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
 lines(seq(0, 40, 5), df.BLR$q[11:19], type = "b", col = "black")
 
-plot(seq(0, 45, 5), df.BLR$n[1:10], type = "l", col = "blue", ylim = c(0, max(df.BLR)), ylab = "Parametr n", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
-lines(seq(0, 40, 5), df.BLR$n[11:19], type = "b", col = "black")
-
-plot(seq(0, 45, 5), df.BLR$p[1:10] * df.BLR$n[1:10], type = "l", col = "blue", ylim = c(0, max(df.BLR$p * df.BLR$n)), ylab = "Average, n*p", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
-lines(seq(0, 40, 5), df.BLR$p[11:19] * df.BLR$n[11:19], type = "b", col = "black")
-
-mid <- c(0.38, 0.67, 0.83, 1.15, 1.70, 1.08, 1.83, 1.91, 2.23, 2.47, 0.39, 0.35, 0.59, 0.87, 0.57, 1.11, 1.13, 1.44, 1.69)
-
-lines(seq(0, 45, 5), mid[1:10], type = "l", lty = 2, col = "green")
-lines(seq(0, 40, 5), mid[11:19], type = "l", lty = 2, col = "black")
+plot(seq(0, 45, 5), df.BLR$n[1:10], type = "l", ylim = c(0, max(df.BLR)), ylab = "Параметр n", xlab = "Доза облучения, Гр")
+lines(seq(0, 40, 5), df.BLR$n[11:19], lty = 2)
+legend(x = "bottomright", legend = c("in vivo", "in vitro"), lty = c(1, 2), col = 1, lwd = 2)
 ```
 
 ```{r}
-plot(seq(0, 45, 5), df.LPR$q[1:10], type = "l", col = "blue", ylim = c(0, max(df.LPR$q)), ylab = "Parametr q", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
-lines(seq(0, 40, 5), df.LPR$q[11:19], type = "b", col = "black")
+plot(seq(0, 45, 5), df.LBR$p[1:10], type = "l", col = "blue", ylim = c(0, max(df.LBR$p)), ylab = "Parametr p", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
+lines(seq(0, 40, 5), df.LBR$p[11:19], type = "b", col = "black")
 
-plot(seq(0, 45, 5), df.LPR$lambda[1:10], type = "l", col = "blue", ylim = c(0, max(df.LPR$lambda)), ylab = "Parametr lambda", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
-lines(seq(0, 40, 5), df.LPR$lambda[11:19], type = "b", col = "black")
+plot(seq(0, 45, 5), df.LBR$q[1:10], type = "l", col = "blue", ylim = c(0, max(df.LBR$q)), ylab = "Parametr q", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
+lines(seq(0, 40, 5), df.LBR$q[11:19], type = "b", col = "black")
+
+plot(seq(0, 45, 5), df.LBR$n[1:10], type = "l", col = "blue", ylim = c(0, max(df.LBR)), ylab = "Параметр n", xlab = "Доза облучения, Гр", main = "Black - in vitro; Blue - in vivo")
+lines(seq(0, 40, 5), df.LBR$n[11:19], type = "b", col = "black")
+```
+
+```{r}
+plot(seq(0, 45, 5), df.LPR$mean_log[1:10], type = "l", ylim = c(0.9, max(c(df.LPR$mean_log[1:10], df.LPR$mean_log[11:19]))), ylab = "Среднее логарифмического", xlab = "Доза облучения, Гр")
+lines(seq(0, 40, 5), df.LPR$mean_log[11:19], lty = 2)
+legend(x = "topright", legend = c("in vivo", "in vitro"), lty = c(1, 2), col = 1, lwd = 2)
+
+plot(seq(0, 45, 5), df.LPR$lambda[1:10], type = "l", ylim = c(0, max(df.LPR$lambda)), ylab = "Среднее пуассоновского", xlab = "Доза облучения, Гр")
+lines(seq(0, 40, 5), df.LPR$lambda[11:19], lty = 2)
+legend(x = "bottomright", legend = c("in vivo", "in vitro"), lty = c(1, 2), col = 1, lwd = 2)
 ```
 
 ```{r}
 plot(seq(0, 45, 5), df.NB$q[1:10], type = "l", col = "blue", ylim = c(0, max(df.NB$q)), ylab = "Parametr q", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
 lines(seq(0, 40, 5), df.NB$q[11:19], type = "b", col = "black")
 
-plot(seq(0, 45, 5), df.NB$n[1:10], type = "l", col = "blue", ylim = c(0, max(df.NB$n)), ylab = "Parametr q", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
+plot(seq(0, 45, 5), df.NB$n[1:10], type = "l", col = "blue", ylim = c(0, max(df.NB$n)), ylab = "Parametr n", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
 lines(seq(0, 40, 5), df.NB$n[11:19], type = "b", col = "black")
 
-plot(seq(0, 45, 5), -df.NB$n[1:10] / log(1 - df.NB$q[1:10]), type = "l", col = "white", ylim = c(0, max(-df.NB$n[11:19] / log(1 - df.NB$q[11:19]))), ylab = "Parametr lambda", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
-lines(seq(0, 40, 5), -df.NB$n[11:19] / log(1 - df.NB$q[11:19]), type = "b", col = "black")
+plot(seq(0, 45, 5), df.NBR$lambda[1:10], type = "l", col = "blue", ylim = c(0, max(df.NBR$lambda[1:10])), ylab = "Parametr lambda", xlab = "Dose, Gy", main = "Black - in vitro; Blue - in vivo")
+lines(seq(0, 40, 5), df.NBR$lambda[11:19], type = "b", col = "black")
 ```
 
 ## Анализ текстов
 
-```{r warning=FALSE}
-library(dplyr)
-library(ggplot2)
-library(foreach)
-library(doSNOW)
-library(plotly)
-```
-
 Загрузим данные:
 
 ```{r}
-WordSample <- read.csv("~/All/study_materials/Диплом/МоделированиеВR/WordCutter/output.csv")
+WordSample <- read.csv("./output.csv")
 
 num.word <- 1000
 ```
@@ -1050,6 +1241,7 @@ cl <- makeCluster(5, type = "SOCK")
 registerDoSNOW(cl)
 
 df.word.binlog <- foreach(i = 1:num.word, .combine = rbind, .inorder = TRUE) %dopar% {
+  print(i)
   histWord <- hist(as.numeric(WordSample[i, ]), probability = TRUE, breaks = seq(-0.5, max(WordSample[i, ]) + 0.5, 1), xlim = c(-0.5, max(WordSample[i, ]) + 0.5), plot = FALSE)
   res <- hist_make(0, histWord$counts, get_hist = FALSE, distr = 'binomlog')
   c(row.names(WordSample)[i], res)
@@ -1093,6 +1285,32 @@ df.word.doublenbinom <- foreach(i = 1:num.word, .combine = rbind, .inorder = TRU
 colnames(df.word.doublenbinom) <- c("name", "p1", "size1", "p2", "size2", "p_value")
 df.word.doublenbinom <- as.data.frame(df.word.doublenbinom)
 df.word.doublenbinom <- df.word.doublenbinom |> mutate(p1 = as.numeric(p1), size1 = as.numeric(size1), p2 = as.numeric(p2), size2 = as.numeric(size2), p_value = as.numeric(p_value))
+
+timediff <- difftime(Sys.time(),start_time)
+cat("Расчёт занял: ", timediff, units(timediff))
+```
+
+### Логарифмически-пуассоновское распределение
+
+Рассчитаем параметры для первых $1000$ слов:
+
+```{r warning=FALSE}
+df.word.logpois <- data.frame()
+
+start_time <- Sys.time()
+
+cl <- makeCluster(5, type = "SOCK")
+registerDoSNOW(cl)
+
+df.word.logpois <- foreach(i = 1:num.word, .combine = rbind, .inorder = TRUE) %dopar% {
+  histWord <- hist(as.numeric(WordSample[i, ]), probability = TRUE, breaks = seq(-0.5, max(WordSample[i, ]) + 0.5, 1), xlim = c(-0.5, max(WordSample[i, ]) + 0.5), plot = FALSE)
+  res <- hist_make(0, histWord$counts, get_hist = FALSE, distr = 'logpois')
+  c(row.names(WordSample)[i], res)
+}
+
+colnames(df.word.logpois) <- c("name", "lambda", "q", "p_value")
+df.word.logpois <- as.data.frame(df.word.logpois)
+df.word.logpois <- df.word.logpois |> mutate(lambda = as.numeric(lambda), q = as.numeric(q), p_value = as.numeric(p_value))
 
 timediff <- difftime(Sys.time(),start_time)
 cat("Расчёт занял: ", timediff, units(timediff))
@@ -1194,14 +1412,16 @@ df.word.yulesimonnbinom <- df.word.yulesimonnbinom |> mutate(p_value = ifelse(p_
 Гистограммы слова по всем расперделениям:
 
 ```{r warning=FALSE}
-name <- 'man'
+name <- 'coat'
 word <- as.numeric(WordSample[name, ])
-histWord <- hist(as.numeric(word), probability = TRUE, breaks = seq(-0.5, max(word) + 0.5, 1), xlim = c(-0.5, max(word) + 0.5), main = "", xlab = "Sample")
+histWord <- hist(as.numeric(word), probability = TRUE, breaks = seq(-0.5, max(word) + 0.5, 1), xlim = c(-0.5, max(word) + 0.5), main = "", xlab = "Значения выборки", ylab = "Вероятности")
 res <- hist_make(0, histWord$counts, get_hist = TRUE, distr = 'binomlog')
 res
 res <- hist_make(0, histWord$counts, get_hist = TRUE, distr = 'doublenbinom')
 res
 res <- hist_make(0, histWord$counts, get_hist = TRUE, distr = 'nbinom')
+res
+res <- hist_make(0, histWord$counts, get_hist = TRUE, distr = 'logpois')
 res
 # res <- hist_make(0, histWord$counts, get_hist = TRUE, distr = 'yulesimonnbinom')
 # res
@@ -1273,14 +1493,14 @@ df.word.all |> select(name, pvalue_nbinom, pvalue_binomlog, pvalue_doublenbinom)
 
 ```{r}
 df.word.all <- df.word.all |> 
-  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom > alpha & pvalue_binomlog > alpha, "all", "-")) |> 
-  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom < alpha & pvalue_binomlog < alpha, "doublenbinom", class)) |> 
-  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom < alpha & pvalue_binomlog > alpha, "binomlog", class)) |> 
-  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom > alpha & pvalue_binomlog < alpha, "nbinom", class)) |>
-  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom > alpha & pvalue_binomlog < alpha, "nbinom+doublenbinom", class)) |>
-  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom > alpha & pvalue_binomlog > alpha, "nbinom+binomlog", class)) |>
-  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom < alpha & pvalue_binomlog > alpha, "doublenbinom+binomlog", class)) |>
-  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom < alpha & pvalue_binomlog < alpha, "nothing", class))
+  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom > alpha & pvalue_binomlog > alpha, "Все", "-")) |> 
+  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom < alpha & pvalue_binomlog < alpha, "Сумма", class)) |> 
+  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom < alpha & pvalue_binomlog > alpha, "БЛР", class)) |> 
+  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom > alpha & pvalue_binomlog < alpha, "ОБР", class)) |>
+  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom > alpha & pvalue_binomlog < alpha, "ОБР и сумма", class)) |>
+  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom > alpha & pvalue_binomlog > alpha, "ОБР и БЛР", class)) |>
+  mutate(class = ifelse(pvalue_doublenbinom > alpha & pvalue_nbinom < alpha & pvalue_binomlog > alpha, "БЛР и сумма", class)) |>
+  mutate(class = ifelse(pvalue_doublenbinom < alpha & pvalue_nbinom < alpha & pvalue_binomlog < alpha, "Ни один", class))
 ```
 
 Посмотрим на точечный график:
@@ -1289,17 +1509,3 @@ df.word.all <- df.word.all |>
 df.word.all |> plot_ly(x = ~log(n_nbinom), y = ~q_nbinom, z = ~log(freq), color = ~class, text = ~paste('word:', name), size = I(150), alpha = 1,  width = 1200, height = 700) |>
   layout(scene = list(xaxis = list(title = 'Логарифм параметра n негативного бинома'), yaxis = list(title = 'Параметр q негативного бинома'), zaxis = list(title = 'Логарифм количества')))
 ```
-
-
-```{r}
-hist_word <- function(name, WordSample, main){
-  word <- as.numeric(WordSample[name, ])
-  histWord <- hist(as.numeric(word), probability = TRUE, breaks = seq(-0.5, max(word) + 0.5, 1), xlim = c(-0.5, max(word) + 0.5), main = main, xlab = name)
-  return()
-}
-```
-
-```{r}
-df.word.all |> filter(class == 'nothing') |> apply(1, function(x) hist_word(x[1], WordSample, x[18]))
-```
-
